@@ -2,15 +2,18 @@
 
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { Session, AuthChangeEvent } from "@supabase/supabase-js";
 
 interface Bookmark {
   id: string;
   title: string;
   url: string;
+  created_at?: string;
+  user_id: string;
 }
 
 export default function Home() {
-  const [session, setSession] = useState<any>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [title, setTitle] = useState("");
   const [url, setUrl] = useState("");
@@ -19,13 +22,13 @@ export default function Home() {
 
   // Get session
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }: { data: any }) => {
+    supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       if (data.session) fetchBookmarks(data.session.user.id);
     });
 
     const { data: listener } = supabase.auth.onAuthStateChange(
-      (_event: any, session: any) => {
+      (_event: AuthChangeEvent, session: Session | null) => {
         setSession(session);
         if (session) fetchBookmarks(session.user.id);
       }
@@ -49,6 +52,8 @@ export default function Home() {
 
   // Realtime
   useEffect(() => {
+    if (!session) return;
+
     const channel = supabase
       .channel("bookmarks-changes")
       .on(
@@ -67,61 +72,96 @@ export default function Home() {
 
   // Add bookmark
   const addBookmark = async () => {
-    if (!title || !url) return;
+    if (!title || !url || !session) return;
     
     setIsLoading(true);
-    const { error } = await supabase.from("bookmarks").insert([
-      {
-        title,
-        url,
-        user_id: session.user.id,
-      },
-    ]);
+    try {
+      const { error } = await supabase.from("bookmarks").insert([
+        {
+          title,
+          url,
+          user_id: session.user.id,
+        },
+      ]);
 
-    if (!error && session) {
-      await fetchBookmarks(session.user.id);
+      if (!error) {
+        await fetchBookmarks(session.user.id);
+        setTitle("");
+        setUrl("");
+      }
+    } catch (error) {
+      console.error("Error adding bookmark:", error);
+    } finally {
+      setIsLoading(false);
     }
-
-    setTitle("");
-    setUrl("");
-    setIsLoading(false);
   };
 
   // Delete bookmark
   const deleteBookmark = async (id: string) => {
+    if (!session) return;
+
     const previousBookmarks = [...bookmarks];
     setBookmarks(bookmarks.filter(b => b.id !== id));
     
-    const { error } = await supabase.from("bookmarks").delete().eq("id", id);
-    
-    if (error) {
+    try {
+      const { error } = await supabase.from("bookmarks").delete().eq("id", id);
+      
+      if (error) {
+        setBookmarks(previousBookmarks);
+      } else {
+        await fetchBookmarks(session.user.id);
+      }
+    } catch (error) {
+      console.error("Error deleting bookmark:", error);
       setBookmarks(previousBookmarks);
-    } else if (session) {
-      await fetchBookmarks(session.user.id);
     }
   };
 
   // Login
   const login = async () => {
     setIsLoading(true);
-    await supabase.auth.signInWithOAuth({
-      provider: "google",
-    });
-    setIsLoading(false);
+    try {
+      await supabase.auth.signInWithOAuth({
+        provider: "google",
+      });
+    } catch (error) {
+      console.error("Error logging in:", error);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Logout
   const logout = async () => {
-    await supabase.auth.signOut();
-    setShowMenu(false);
+    try {
+      await supabase.auth.signOut();
+      setShowMenu(false);
+    } catch (error) {
+      console.error("Error logging out:", error);
+    }
   };
 
   // Handle keyboard submission
   const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && title && url) {
+    if (e.key === 'Enter' && title && url && !isLoading) {
       addBookmark();
     }
   };
+
+  // Close menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (showMenu && !target.closest('[data-menu-container]')) {
+        setShowMenu(false);
+      }
+    };
+
+    if (showMenu) {
+      document.addEventListener('click', handleClickOutside);
+      return () => document.removeEventListener('click', handleClickOutside);
+    }
+  }, [showMenu]);
 
   // ================= UI =================
 
@@ -147,8 +187,7 @@ export default function Home() {
             <button
               onClick={login}
               disabled={isLoading}
-              className="w-full bg-white hover:bg-white/90 active:bg-white/80 disabled:bg-white/50 text-black font-medium py-3 px-4 rounded-xl transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-white focus:ring-offset-2 focus:ring-offset-black"
-              aria-label="Sign in with Google"
+              className="w-full bg-white hover:bg-white/90 active:bg-white/80 disabled:bg-white/50 disabled:cursor-not-allowed text-black font-medium py-3 px-4 rounded-xl transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-white focus:ring-offset-2 focus:ring-offset-black"
             >
               {isLoading ? 'Signing in...' : 'Sign in with Google'}
             </button>
@@ -173,11 +212,13 @@ export default function Home() {
           </div>
 
           {/* Menu Button */}
-          <div className="relative">
+          <div className="relative" data-menu-container="true">
             <button
               onClick={() => setShowMenu(!showMenu)}
               className="bg-white/10 hover:bg-white/20 p-2.5 rounded-xl border border-white/20 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-white/50"
               aria-label="Menu"
+              aria-expanded={showMenu}
+              aria-haspopup="true"
             >
               <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
@@ -206,7 +247,7 @@ export default function Home() {
         </div>
 
         {/* Add Bookmark Form */}
-        <section className="bg-white/5 border border-white/10 rounded-2xl p-6 mb-6" aria-label="Add new bookmark">
+        <section className="bg-white/5 border border-white/10 rounded-2xl p-6 mb-6">
           <h2 className="text-lg font-semibold text-white mb-4">Add Bookmark</h2>
           <div className="flex flex-col sm:flex-row gap-3">
             <input
@@ -216,8 +257,7 @@ export default function Home() {
               onChange={(e) => setTitle(e.target.value)}
               onKeyPress={handleKeyPress}
               className="flex-1 bg-white/5 border border-white/10 px-4 py-3 rounded-xl text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-white/50 focus:border-transparent transition-all duration-200"
-              aria-label="Bookmark title"
-              required
+              disabled={isLoading}
             />
             <input
               type="url"
@@ -226,14 +266,12 @@ export default function Home() {
               onChange={(e) => setUrl(e.target.value)}
               onKeyPress={handleKeyPress}
               className="flex-1 bg-white/5 border border-white/10 px-4 py-3 rounded-xl text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-white/50 focus:border-transparent transition-all duration-200"
-              aria-label="Bookmark URL"
-              required
+              disabled={isLoading}
             />
             <button
               onClick={addBookmark}
               disabled={isLoading || !title || !url}
-              className="bg-white hover:bg-white/90 active:bg-white/80 disabled:bg-white/50 text-black font-medium px-6 py-3 rounded-xl transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-white focus:ring-offset-2 focus:ring-offset-black whitespace-nowrap"
-              aria-label="Add bookmark"
+              className="bg-white hover:bg-white/90 active:bg-white/80 disabled:bg-white/50 disabled:cursor-not-allowed text-black font-medium px-6 py-3 rounded-xl transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-white focus:ring-offset-2 focus:ring-offset-black whitespace-nowrap"
             >
               {isLoading ? 'Adding...' : 'Add'}
             </button>
@@ -241,7 +279,7 @@ export default function Home() {
         </section>
 
         {/* Bookmarks List */}
-        <section aria-label="Saved bookmarks">
+        <section>
           {bookmarks.length === 0 ? (
             <div className="bg-white/5 border border-white/10 rounded-2xl p-12 text-center">
               <div className="inline-flex items-center justify-center w-16 h-16 bg-white/5 rounded-2xl mb-4">
@@ -253,7 +291,7 @@ export default function Home() {
               <p className="text-white/40 text-sm">Add your first bookmark using the form above</p>
             </div>
           ) : (
-            <ul className="space-y-3" role="list">
+            <ul className="space-y-3">
               {bookmarks.map((bookmark) => (
                 <li
                   key={bookmark.id}
@@ -279,7 +317,6 @@ export default function Home() {
                     <button
                       onClick={() => deleteBookmark(bookmark.id)}
                       className="bg-red-500/10 hover:bg-red-500/20 active:bg-red-500/30 text-red-400 font-medium px-4 py-2.5 rounded-xl border border-red-500/20 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-red-500/50 whitespace-nowrap"
-                      aria-label={`Delete ${bookmark.title}`}
                     >
                       Delete
                     </button>
