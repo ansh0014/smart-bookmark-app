@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase";
+import { createClient } from "@/lib/supabase";
 import { Session, AuthChangeEvent } from "@supabase/supabase-js";
 
 interface Bookmark {
@@ -19,6 +19,9 @@ export default function Home() {
   const [url, setUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
+
+  // Create Supabase client
+  const supabase = createClient();
 
   // Get session
   useEffect(() => {
